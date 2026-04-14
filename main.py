@@ -13,7 +13,7 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mysecrettoken123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 
-# Gemini Setup
+# Gemini Setup - 2.0 Flash (faster + more free quota)
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Conversation History
@@ -77,12 +77,13 @@ CONTACT:
 - Available: 24/7
 
 RULES:
-- Har message ka jawab do chahe "Hi" ho ya "Hello"
+- Har message ka jawab do chahe "Hi" ho ya "Hello" ya "kya hal h"
 - KABHI same reply repeat mat karo
 - Conversation yaad rakho aur uske mutabiq jawab do
 - Pehli baar milna ho toh warmly greet karo aur tours introduce karo
 - Dusri baar se directly unke sawaal ka jawab do
 - Booking process mein ek ek cheez poochho
+- Agar koi simple greeting kare toh friendly reply do aur poochho kaise help kar sakte hain
 """
 
 # =============================================
@@ -115,7 +116,7 @@ async def webhook(request: Request):
             if msg_type == "text":
                 user_text = msg.get("text", {}).get("body", "")
                 if user_text:
-                    # Rate limit check - 2 second delay between messages
+                    # Rate limit - 2 second gap
                     now = datetime.now().timestamp()
                     last_time = last_message_time.get(sender_id, 0)
                     if now - last_time < 2:
@@ -131,19 +132,18 @@ async def webhook(request: Request):
     return {"status": "ok"}
 
 # =============================================
-# AI RESPONSE
+# AI RESPONSE WITH gemini-2.0-flash
 # =============================================
 async def get_ai_response(sender_id: str, user_message: str) -> str:
+    is_new_user = sender_id not in known_users
     try:
-        is_new_user = sender_id not in known_users
-
         if sender_id not in conversation_history:
             conversation_history[sender_id] = []
 
         if is_new_user:
             known_users.add(sender_id)
 
-        # Build full prompt with history
+        # Build conversation history text
         history_text = ""
         for msg in conversation_history[sender_id][-10:]:
             role = "Customer" if msg["role"] == "user" else "Agent"
@@ -153,11 +153,9 @@ async def get_ai_response(sender_id: str, user_message: str) -> str:
             full_prompt = f"""{EGLAI_SYSTEM_PROMPT}
 
 ---
-CONVERSATION HISTORY:
-(Yeh customer pehli baar aa raha hai - warmly greet karo)
-
-Customer ka pehla message: {user_message}
-
+CONVERSATION:
+(Yeh customer pehli baar aa raha hai)
+Customer: {user_message}
 Agent:"""
         else:
             full_prompt = f"""{EGLAI_SYSTEM_PROMPT}
@@ -166,13 +164,13 @@ Agent:"""
 CONVERSATION HISTORY:
 {history_text}
 Customer: {user_message}
-
 Agent:"""
 
-        # Retry with delay
+        # Retry 3 times
         for attempt in range(3):
             try:
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                # Using gemini-2.0-flash for better free quota
+                model = genai.GenerativeModel("gemini-2.0-flash")
                 response = model.generate_content(full_prompt)
                 reply = response.text.strip()
 
@@ -186,7 +184,7 @@ Agent:"""
                     "parts": [reply]
                 })
 
-                # Keep last 20 messages
+                # Keep last 20 messages only
                 if len(conversation_history[sender_id]) > 20:
                     conversation_history[sender_id] = conversation_history[sender_id][-20:]
 
@@ -195,9 +193,9 @@ Agent:"""
             except Exception as e:
                 print(f"Gemini attempt {attempt+1} error: {e}")
                 if "429" in str(e) or "quota" in str(e).lower():
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(5)
                 elif attempt < 2:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
                 else:
                     raise e
 
@@ -206,7 +204,7 @@ Agent:"""
         if is_new_user:
             return "Assalam o Alaikum! 🌟 Eglai Tours mein khush amdeed! Main aapka travel assistant hun. Hunza, Skardu, Swat, Murree — Pakistan ke behtareen tours hain hamare paas! Kaunsa tour pasand hai aapko? 😊"
         else:
-            return "Maafi chahta hun, thori technical difficulty aa gayi! Kripya dobara likhein — main abhi help karunga! 🙏"
+            return "Ji! Bataiye main kaise help kar sakta hun? 😊"
 
 # =============================================
 # SEND WHATSAPP MESSAGE
@@ -249,5 +247,6 @@ async def send_whatsapp(to: str, message: str):
 async def health_check():
     return {
         "status": "Eglai Tours Chatbot Running!",
+        "model": "gemini-2.0-flash",
         "timestamp": datetime.now().isoformat()
     }
