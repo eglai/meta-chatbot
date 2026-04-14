@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 import httpx
 import google.generativeai as genai
 import os
-import json
+import asyncio
 from datetime import datetime
 
 app = FastAPI()
@@ -17,14 +17,11 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# =============================================
-# CONVERSATION HISTORY (In-memory storage)
-# =============================================
+# Conversation History
 conversation_history = {}
-booking_data = {}
 
 # =============================================
-# EGLAI TOURS - COMPLETE SYSTEM PROMPT
+# EGLAI TOURS - SYSTEM PROMPT
 # =============================================
 EGLAI_SYSTEM_PROMPT = """
 You are an AI assistant for **Eglai Tours** — a premium travel company operating across Pakistan.
@@ -44,12 +41,12 @@ You help customers with:
    - Price: PKR 45,000/person
    - Includes: Transport, Hotel, Breakfast & Dinner, Guide
    - Highlights: Attabad Lake, Baltit Fort, Passu Cones, Eagle's Nest
-   
+
 2. **Skardu Adventure Tour** (6 Days / 5 Nights)
    - Price: PKR 55,000/person
    - Includes: Transport, Hotel, All Meals, Guide, Jeep Safari
    - Highlights: Shangrila Resort, Deosai Plains, Satpara Lake, Shigar Fort
-   
+
 3. **Swat Valley Tour** (4 Days / 3 Nights)
    - Price: PKR 30,000/person
    - Includes: Transport, Hotel, Breakfast, Guide
@@ -57,14 +54,14 @@ You help customers with:
 
 4. **Hunza + Skardu Combined** (9 Days / 8 Nights)
    - Price: PKR 90,000/person
-   - Includes: Everything above combined
-   
+   - Includes: Everything included
+
 ### 🌲 CENTRAL PAKISTAN TOURS:
 5. **Murree & Nathiagali Tour** (3 Days / 2 Nights)
    - Price: PKR 18,000/person
    - Includes: Transport, Hotel, Breakfast
    - Highlights: Mall Road, Patriata, Nathiagali Forest
-   
+
 6. **Azad Kashmir Tour** (4 Days / 3 Nights)
    - Price: PKR 28,000/person
    - Includes: Transport, Hotel, Breakfast & Dinner, Guide
@@ -75,7 +72,7 @@ You help customers with:
    - Price: PKR 12,000/person
    - Includes: Transport, Hotel, Breakfast, Guide
    - Highlights: Badshahi Mosque, Lahore Fort, Shalimar Gardens, Food Street
-   
+
 8. **Multan & Mohenjo-daro Tour** (3 Days / 2 Nights)
    - Price: PKR 22,000/person
 
@@ -86,14 +83,16 @@ You help customers with:
 ## BOOKING PROCESS:
 When customer wants to book, collect this info ONE BY ONE (not all at once):
 1. Full Name
-2. Phone Number (if not already known)
+2. Phone Number
 3. City (from where they will travel)
 4. Tour Name / Destination
 5. Number of Persons
 6. Preferred Travel Date
-7. Any special requirements (honeymoon, family, adventure, etc.)
+7. Any special requirements
 
 After collecting all info, show a BOOKING SUMMARY and ask for confirmation.
+After confirmation, give booking reference: EGLAI + random 4 digits
+Remind that 30% advance payment is required.
 
 ## DISCOUNTS:
 - Group of 5+: 10% discount
@@ -108,19 +107,18 @@ After collecting all info, show a BOOKING SUMMARY and ask for confirmation.
 - Cities: Lahore, Karachi, Islamabad, Multan, Faisalabad
 
 ## LANGUAGE RULES:
-- If customer writes in Urdu/Roman Urdu → Reply in Roman Urdu (easy to read)
-- If customer writes in English → Reply in English
+- If customer writes in Urdu/Roman Urdu -> Reply in Roman Urdu
+- If customer writes in English -> Reply in English
 - Always be friendly, helpful and professional
-- Use emojis to make conversation engaging 😊
-- Never be rude or dismissive
+- Use emojis to make conversation engaging
+- ALWAYS reply to every message no matter how short (Hi, Hello, Salam, etc.)
+- For greetings like Hi, Hello, Salam -> Greet back warmly and introduce Eglai Tours
 
-## IMPORTANT RULES:
-- Always greet new customers warmly
+## IMPORTANT:
+- NEVER ignore any message
+- ALWAYS respond to every single message
 - Be patient and answer all questions
-- If you don't know something specific, say you'll check and get back
 - Always try to convert inquiries into bookings
-- After booking confirmation, give a booking reference number (EGLAI + random 4 digits)
-- Remind customers that 30% advance payment is required to confirm booking
 """
 
 # =============================================
@@ -150,14 +148,10 @@ async def webhook(request: Request):
             msg_type = msg.get("type", "")
             sender_id = msg.get("from", "")
 
-            # Only handle text messages
             if msg_type == "text":
                 user_text = msg.get("text", {}).get("body", "")
-
                 if user_text:
-                    # Get AI response
                     reply = await get_ai_response(sender_id, user_text)
-                    # Send reply
                     await send_whatsapp(sender_id, reply)
 
     except Exception as e:
@@ -166,50 +160,51 @@ async def webhook(request: Request):
     return {"status": "ok"}
 
 # =============================================
-# AI RESPONSE WITH CONVERSATION HISTORY
+# AI RESPONSE WITH RETRY LOGIC
 # =============================================
 async def get_ai_response(sender_id: str, user_message: str) -> str:
     try:
-        # Initialize conversation history for new users
         if sender_id not in conversation_history:
             conversation_history[sender_id] = []
-            # Welcome new user
-            welcome_context = "This is a NEW customer. Greet them warmly and introduce Eglai Tours briefly."
-            user_message_with_context = f"{welcome_context}\n\nCustomer message: {user_message}"
+            user_message_with_context = f"This is a NEW customer. Greet them warmly and introduce Eglai Tours briefly.\n\nCustomer message: {user_message}"
         else:
             user_message_with_context = user_message
 
-        # Add user message to history
         conversation_history[sender_id].append({
             "role": "user",
             "parts": [user_message_with_context]
         })
 
-        # Keep only last 20 messages to avoid token limit
         if len(conversation_history[sender_id]) > 20:
             conversation_history[sender_id] = conversation_history[sender_id][-20:]
 
-        # Create chat with history
-        chat = model.start_chat(history=conversation_history[sender_id][:-1])
+        # Retry 3 baar
+        for attempt in range(3):
+            try:
+                chat = model.start_chat(
+                    history=conversation_history[sender_id][:-1]
+                )
+                response = chat.send_message(
+                    EGLAI_SYSTEM_PROMPT + "\n\nCustomer message: " + user_message_with_context
+                )
+                reply = response.text
 
-        # Get response
-        response = chat.send_message(
-            EGLAI_SYSTEM_PROMPT + "\n\n" + user_message_with_context
-        )
+                conversation_history[sender_id].append({
+                    "role": "model",
+                    "parts": [reply]
+                })
+                return reply
 
-        reply = response.text
-
-        # Add assistant response to history
-        conversation_history[sender_id].append({
-            "role": "model",
-            "parts": [reply]
-        })
-
-        return reply
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(1)
+                else:
+                    raise e
 
     except Exception as e:
         print(f"AI Error: {e}")
-        return "Assalam o Alaikum! 🌟 Eglai Tours mein khush amdeed! Abhi hamara system thora busy hai, please thori der baad dobara try karein. Shukriya! 🙏"
+        return "Assalam o Alaikum! 🌟 Eglai Tours mein khush amdeed! Hum Pakistan ke behtareen tours offer karte hain — Hunza, Skardu, Swat, Murree aur bohat kuch! Aap kaunsa tour dekhna chahte hain? 😊"
 
 # =============================================
 # SEND WHATSAPP MESSAGE
@@ -222,7 +217,6 @@ async def send_whatsapp(to: str, message: str):
             "Content-Type": "application/json"
         }
 
-        # Split long messages (WhatsApp limit is 4096 chars)
         if len(message) > 4000:
             chunks = [message[i:i+4000] for i in range(0, len(message), 4000)]
             for chunk in chunks:
@@ -233,6 +227,7 @@ async def send_whatsapp(to: str, message: str):
                 }
                 async with httpx.AsyncClient() as client:
                     await client.post(url, json=payload, headers=headers)
+                await asyncio.sleep(0.5)
         else:
             payload = {
                 "messaging_product": "whatsapp",
