@@ -16,101 +16,73 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 # Gemini Setup
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Conversation History - per user
+# Conversation History
 conversation_history = {}
-# Track if user is new or existing
 known_users = set()
+last_message_time = {}
 
 # =============================================
 # EGLAI TOURS - SYSTEM PROMPT
 # =============================================
 EGLAI_SYSTEM_PROMPT = """
-You are an AI assistant for **Eglai Tours** — a premium travel company operating across Pakistan.
+You are a friendly AI travel agent for Eglai Tours — a premium travel company in Pakistan.
 
-## YOUR ROLE:
-You help customers with:
-1. Tour information & packages
-2. Booking tours (collect all details step by step)
-3. Pricing & availability
-4. Travel tips & advice
-5. Answering any travel-related questions about Pakistan
+PERSONALITY: Friendly, helpful, professional. Talk like a real travel agent friend.
+Use Roman Urdu if customer writes in Urdu, English if they write in English.
+Use emojis naturally. Never be robotic.
 
-## EGLAI TOURS - PACKAGES & PRICING:
+TOURS & PRICES:
+1. Hunza Valley - 5 din/4 raatein - PKR 45,000/person
+   (Attabad Lake, Baltit Fort, Passu Cones, Eagle's Nest)
 
-### NORTHERN PAKISTAN TOURS:
-1. Hunza Valley Tour (5 Days / 4 Nights)
-   - Price: PKR 45,000/person
-   - Includes: Transport, Hotel, Breakfast & Dinner, Guide
-   - Highlights: Attabad Lake, Baltit Fort, Passu Cones, Eagle's Nest
+2. Skardu Adventure - 6 din/5 raatein - PKR 55,000/person
+   (Shangrila Resort, Deosai Plains, Satpara Lake, Shigar Fort)
 
-2. Skardu Adventure Tour (6 Days / 5 Nights)
-   - Price: PKR 55,000/person
-   - Includes: Transport, Hotel, All Meals, Guide, Jeep Safari
-   - Highlights: Shangrila Resort, Deosai Plains, Satpara Lake, Shigar Fort
+3. Swat Valley - 4 din/3 raatein - PKR 30,000/person
+   (Malam Jabba, Mahodand Lake, Kalam, Mingora)
 
-3. Swat Valley Tour (4 Days / 3 Nights)
-   - Price: PKR 30,000/person
-   - Includes: Transport, Hotel, Breakfast, Guide
-   - Highlights: Malam Jabba, Mahodand Lake, Kalam, Mingora
+4. Hunza + Skardu Combined - 9 din/8 raatein - PKR 90,000/person
 
-4. Hunza + Skardu Combined (9 Days / 8 Nights)
-   - Price: PKR 90,000/person
+5. Murree & Nathiagali - 3 din/2 raatein - PKR 18,000/person
+   (Mall Road, Patriata, Nathiagali Forest)
 
-### CENTRAL PAKISTAN TOURS:
-5. Murree & Nathiagali Tour (3 Days / 2 Nights)
-   - Price: PKR 18,000/person
-   - Highlights: Mall Road, Patriata, Nathiagali Forest
+6. Azad Kashmir - 4 din/3 raatein - PKR 28,000/person
+   (Neelum Valley, Ratti Gali Lake, Sharda)
 
-6. Azad Kashmir Tour (4 Days / 3 Nights)
-   - Price: PKR 28,000/person
-   - Highlights: Neelum Valley, Ratti Gali Lake, Sharda
+7. Lahore Heritage - 2 din/1 raat - PKR 12,000/person
+   (Badshahi Mosque, Lahore Fort, Shalimar Gardens, Food Street)
 
-### HISTORICAL TOURS:
-7. Lahore Heritage Tour (2 Days / 1 Night)
-   - Price: PKR 12,000/person
-   - Highlights: Badshahi Mosque, Lahore Fort, Shalimar Gardens
+8. Custom Tour - Price depends on requirements
 
-8. Multan Tour (3 Days / 2 Nights)
-   - Price: PKR 22,000/person
+DISCOUNTS:
+- 5+ log: 10% off
+- 10+ log: 15% off
+- 30 din pehle booking: 5% off
+- Honeymoon package: Free romantic extras
 
-### CUSTOM TOURS:
-- Any destination as per customer requirement
-- Price: Depends on requirements
-
-## BOOKING PROCESS:
-When customer wants to book, collect ONE BY ONE:
-1. Full Name
-2. Phone Number
-3. City of departure
-4. Tour Name
-5. Number of Persons
-6. Travel Date
+BOOKING - collect ONE BY ONE:
+1. Poora naam
+2. Phone number
+3. Departure city
+4. Tour name
+5. Kitne log
+6. Travel date
 7. Special requirements
+Then show summary, confirm, give ref: EGLAI + 4 digits
+30% advance payment zaroori hai.
 
-Show BOOKING SUMMARY then confirm.
-Give booking ref: EGLAI + 4 random digits
-Remind: 30% advance required.
-
-## DISCOUNTS:
-- 5+ persons: 10% off
-- 10+ persons: 15% off
-- 30 days early booking: 5% off
-
-## CONTACT:
+CONTACT:
 - Email: info@eglai.store
 - Website: https://eglai.store
+- Available: 24/7
 
-## CRITICAL LANGUAGE & BEHAVIOR RULES:
-1. Read the customer's EXACT message carefully
-2. Reply DIRECTLY to what they asked — do NOT repeat welcome message
-3. If they ask about Hunza -> give Hunza details
-4. If they ask "kya kya krty ho" -> list all services/tours
-5. If they want to book -> start booking process
-6. Roman Urdu message -> reply in Roman Urdu
-7. English message -> reply in English
-8. NEVER give the same welcome message twice
-9. Remember the FULL conversation and reply accordingly
-10. Be natural, friendly, helpful like a real travel agent
+RULES:
+- Har message ka jawab do chahe "Hi" ho ya "Hello"
+- KABHI same reply repeat mat karo
+- Conversation yaad rakho aur uske mutabiq jawab do
+- Pehli baar milna ho toh warmly greet karo aur tours introduce karo
+- Dusri baar se directly unke sawaal ka jawab do
+- Booking process mein ek ek cheez poochho
 """
 
 # =============================================
@@ -143,6 +115,13 @@ async def webhook(request: Request):
             if msg_type == "text":
                 user_text = msg.get("text", {}).get("body", "")
                 if user_text:
+                    # Rate limit check - 2 second delay between messages
+                    now = datetime.now().timestamp()
+                    last_time = last_message_time.get(sender_id, 0)
+                    if now - last_time < 2:
+                        await asyncio.sleep(2 - (now - last_time))
+                    last_message_time[sender_id] = datetime.now().timestamp()
+
                     reply = await get_ai_response(sender_id, user_text)
                     await send_whatsapp(sender_id, reply)
 
@@ -152,72 +131,82 @@ async def webhook(request: Request):
     return {"status": "ok"}
 
 # =============================================
-# AI RESPONSE - FIXED CONVERSATION TRACKING
+# AI RESPONSE
 # =============================================
 async def get_ai_response(sender_id: str, user_message: str) -> str:
     try:
-        # Initialize for new user
         is_new_user = sender_id not in known_users
+
         if sender_id not in conversation_history:
             conversation_history[sender_id] = []
 
-        # Build messages list for Gemini
-        messages = conversation_history[sender_id].copy()
-
-        # Add current user message
         if is_new_user:
-            # First time - add context that this is new customer
-            full_message = f"[NEW CUSTOMER - greet warmly and introduce Eglai Tours]\nCustomer: {user_message}"
             known_users.add(sender_id)
+
+        # Build full prompt with history
+        history_text = ""
+        for msg in conversation_history[sender_id][-10:]:
+            role = "Customer" if msg["role"] == "user" else "Agent"
+            history_text += f"{role}: {msg['parts'][0]}\n"
+
+        if is_new_user:
+            full_prompt = f"""{EGLAI_SYSTEM_PROMPT}
+
+---
+CONVERSATION HISTORY:
+(Yeh customer pehli baar aa raha hai - warmly greet karo)
+
+Customer ka pehla message: {user_message}
+
+Agent:"""
         else:
-            full_message = user_message
+            full_prompt = f"""{EGLAI_SYSTEM_PROMPT}
 
-        messages.append({
-            "role": "user",
-            "parts": [full_message]
-        })
+---
+CONVERSATION HISTORY:
+{history_text}
+Customer: {user_message}
 
-        # Keep last 15 exchanges
-        if len(messages) > 30:
-            messages = messages[-30:]
+Agent:"""
 
-        # Retry logic
+        # Retry with delay
         for attempt in range(3):
             try:
-                model_instance = genai.GenerativeModel(
-                    "gemini-1.5-flash",
-                    system_instruction=EGLAI_SYSTEM_PROMPT
-                )
-                chat = model_instance.start_chat(history=messages[:-1])
-                response = chat.send_message(full_message if is_new_user else user_message)
-                reply = response.text
+                model = genai.GenerativeModel("gemini-1.5-flash")
+                response = model.generate_content(full_prompt)
+                reply = response.text.strip()
 
                 # Save to history
                 conversation_history[sender_id].append({
                     "role": "user",
-                    "parts": [user_message]  # Save original message
+                    "parts": [user_message]
                 })
                 conversation_history[sender_id].append({
                     "role": "model",
                     "parts": [reply]
                 })
 
-                # Keep history manageable
-                if len(conversation_history[sender_id]) > 30:
-                    conversation_history[sender_id] = conversation_history[sender_id][-30:]
+                # Keep last 20 messages
+                if len(conversation_history[sender_id]) > 20:
+                    conversation_history[sender_id] = conversation_history[sender_id][-20:]
 
                 return reply
 
             except Exception as e:
-                print(f"Attempt {attempt + 1} failed: {e}")
-                if attempt < 2:
+                print(f"Gemini attempt {attempt+1} error: {e}")
+                if "429" in str(e) or "quota" in str(e).lower():
+                    await asyncio.sleep(3)
+                elif attempt < 2:
                     await asyncio.sleep(1)
                 else:
                     raise e
 
     except Exception as e:
         print(f"AI Error: {e}")
-        return "Assalam o Alaikum! 🌟 Eglai Tours mein khush amdeed! Aap kaunsa tour dekhna chahte hain? Hunza, Skardu, Swat, Murree — sab available hain! 😊"
+        if is_new_user:
+            return "Assalam o Alaikum! 🌟 Eglai Tours mein khush amdeed! Main aapka travel assistant hun. Hunza, Skardu, Swat, Murree — Pakistan ke behtareen tours hain hamare paas! Kaunsa tour pasand hai aapko? 😊"
+        else:
+            return "Maafi chahta hun, thori technical difficulty aa gayi! Kripya dobara likhein — main abhi help karunga! 🙏"
 
 # =============================================
 # SEND WHATSAPP MESSAGE
