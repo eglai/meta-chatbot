@@ -15,10 +15,11 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 
 # Gemini Setup
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
 
-# Conversation History
+# Conversation History - per user
 conversation_history = {}
+# Track if user is new or existing
+known_users = set()
 
 # =============================================
 # EGLAI TOURS - SYSTEM PROMPT
@@ -36,89 +37,80 @@ You help customers with:
 
 ## EGLAI TOURS - PACKAGES & PRICING:
 
-### 🏔️ NORTHERN PAKISTAN TOURS:
-1. **Hunza Valley Tour** (5 Days / 4 Nights)
+### NORTHERN PAKISTAN TOURS:
+1. Hunza Valley Tour (5 Days / 4 Nights)
    - Price: PKR 45,000/person
    - Includes: Transport, Hotel, Breakfast & Dinner, Guide
    - Highlights: Attabad Lake, Baltit Fort, Passu Cones, Eagle's Nest
 
-2. **Skardu Adventure Tour** (6 Days / 5 Nights)
+2. Skardu Adventure Tour (6 Days / 5 Nights)
    - Price: PKR 55,000/person
    - Includes: Transport, Hotel, All Meals, Guide, Jeep Safari
    - Highlights: Shangrila Resort, Deosai Plains, Satpara Lake, Shigar Fort
 
-3. **Swat Valley Tour** (4 Days / 3 Nights)
+3. Swat Valley Tour (4 Days / 3 Nights)
    - Price: PKR 30,000/person
    - Includes: Transport, Hotel, Breakfast, Guide
    - Highlights: Malam Jabba, Mahodand Lake, Kalam, Mingora
 
-4. **Hunza + Skardu Combined** (9 Days / 8 Nights)
+4. Hunza + Skardu Combined (9 Days / 8 Nights)
    - Price: PKR 90,000/person
-   - Includes: Everything included
 
-### 🌲 CENTRAL PAKISTAN TOURS:
-5. **Murree & Nathiagali Tour** (3 Days / 2 Nights)
+### CENTRAL PAKISTAN TOURS:
+5. Murree & Nathiagali Tour (3 Days / 2 Nights)
    - Price: PKR 18,000/person
-   - Includes: Transport, Hotel, Breakfast
    - Highlights: Mall Road, Patriata, Nathiagali Forest
 
-6. **Azad Kashmir Tour** (4 Days / 3 Nights)
+6. Azad Kashmir Tour (4 Days / 3 Nights)
    - Price: PKR 28,000/person
-   - Includes: Transport, Hotel, Breakfast & Dinner, Guide
    - Highlights: Neelum Valley, Ratti Gali Lake, Sharda
 
-### 🏛️ HISTORICAL TOURS:
-7. **Lahore Heritage Tour** (2 Days / 1 Night)
+### HISTORICAL TOURS:
+7. Lahore Heritage Tour (2 Days / 1 Night)
    - Price: PKR 12,000/person
-   - Includes: Transport, Hotel, Breakfast, Guide
-   - Highlights: Badshahi Mosque, Lahore Fort, Shalimar Gardens, Food Street
+   - Highlights: Badshahi Mosque, Lahore Fort, Shalimar Gardens
 
-8. **Multan & Mohenjo-daro Tour** (3 Days / 2 Nights)
+8. Multan Tour (3 Days / 2 Nights)
    - Price: PKR 22,000/person
 
-### 🎯 CUSTOM TOURS:
-- Any destination customized as per customer requirement
+### CUSTOM TOURS:
+- Any destination as per customer requirement
 - Price: Depends on requirements
 
 ## BOOKING PROCESS:
-When customer wants to book, collect this info ONE BY ONE (not all at once):
+When customer wants to book, collect ONE BY ONE:
 1. Full Name
 2. Phone Number
-3. City (from where they will travel)
-4. Tour Name / Destination
+3. City of departure
+4. Tour Name
 5. Number of Persons
-6. Preferred Travel Date
-7. Any special requirements
+6. Travel Date
+7. Special requirements
 
-After collecting all info, show a BOOKING SUMMARY and ask for confirmation.
-After confirmation, give booking reference: EGLAI + random 4 digits
-Remind that 30% advance payment is required.
+Show BOOKING SUMMARY then confirm.
+Give booking ref: EGLAI + 4 random digits
+Remind: 30% advance required.
 
 ## DISCOUNTS:
-- Group of 5+: 10% discount
-- Group of 10+: 15% discount
-- Early booking (30 days+): 5% discount
-- Honeymoon package: Special romantic additions free
+- 5+ persons: 10% off
+- 10+ persons: 15% off
+- 30 days early booking: 5% off
 
-## CONTACT INFO:
-- WhatsApp/Phone: Available 24/7 via this chatbot
+## CONTACT:
 - Email: info@eglai.store
 - Website: https://eglai.store
-- Cities: Lahore, Karachi, Islamabad, Multan, Faisalabad
 
-## LANGUAGE RULES:
-- If customer writes in Urdu/Roman Urdu -> Reply in Roman Urdu
-- If customer writes in English -> Reply in English
-- Always be friendly, helpful and professional
-- Use emojis to make conversation engaging
-- ALWAYS reply to every message no matter how short (Hi, Hello, Salam, etc.)
-- For greetings like Hi, Hello, Salam -> Greet back warmly and introduce Eglai Tours
-
-## IMPORTANT:
-- NEVER ignore any message
-- ALWAYS respond to every single message
-- Be patient and answer all questions
-- Always try to convert inquiries into bookings
+## CRITICAL LANGUAGE & BEHAVIOR RULES:
+1. Read the customer's EXACT message carefully
+2. Reply DIRECTLY to what they asked — do NOT repeat welcome message
+3. If they ask about Hunza -> give Hunza details
+4. If they ask "kya kya krty ho" -> list all services/tours
+5. If they want to book -> start booking process
+6. Roman Urdu message -> reply in Roman Urdu
+7. English message -> reply in English
+8. NEVER give the same welcome message twice
+9. Remember the FULL conversation and reply accordingly
+10. Be natural, friendly, helpful like a real travel agent
 """
 
 # =============================================
@@ -155,44 +147,65 @@ async def webhook(request: Request):
                     await send_whatsapp(sender_id, reply)
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Webhook Error: {e}")
 
     return {"status": "ok"}
 
 # =============================================
-# AI RESPONSE WITH RETRY LOGIC
+# AI RESPONSE - FIXED CONVERSATION TRACKING
 # =============================================
 async def get_ai_response(sender_id: str, user_message: str) -> str:
     try:
+        # Initialize for new user
+        is_new_user = sender_id not in known_users
         if sender_id not in conversation_history:
             conversation_history[sender_id] = []
-            user_message_with_context = f"This is a NEW customer. Greet them warmly and introduce Eglai Tours briefly.\n\nCustomer message: {user_message}"
-        else:
-            user_message_with_context = user_message
 
-        conversation_history[sender_id].append({
+        # Build messages list for Gemini
+        messages = conversation_history[sender_id].copy()
+
+        # Add current user message
+        if is_new_user:
+            # First time - add context that this is new customer
+            full_message = f"[NEW CUSTOMER - greet warmly and introduce Eglai Tours]\nCustomer: {user_message}"
+            known_users.add(sender_id)
+        else:
+            full_message = user_message
+
+        messages.append({
             "role": "user",
-            "parts": [user_message_with_context]
+            "parts": [full_message]
         })
 
-        if len(conversation_history[sender_id]) > 20:
-            conversation_history[sender_id] = conversation_history[sender_id][-20:]
+        # Keep last 15 exchanges
+        if len(messages) > 30:
+            messages = messages[-30:]
 
-        # Retry 3 baar
+        # Retry logic
         for attempt in range(3):
             try:
-                chat = model.start_chat(
-                    history=conversation_history[sender_id][:-1]
+                model_instance = genai.GenerativeModel(
+                    "gemini-1.5-flash",
+                    system_instruction=EGLAI_SYSTEM_PROMPT
                 )
-                response = chat.send_message(
-                    EGLAI_SYSTEM_PROMPT + "\n\nCustomer message: " + user_message_with_context
-                )
+                chat = model_instance.start_chat(history=messages[:-1])
+                response = chat.send_message(full_message if is_new_user else user_message)
                 reply = response.text
 
+                # Save to history
+                conversation_history[sender_id].append({
+                    "role": "user",
+                    "parts": [user_message]  # Save original message
+                })
                 conversation_history[sender_id].append({
                     "role": "model",
                     "parts": [reply]
                 })
+
+                # Keep history manageable
+                if len(conversation_history[sender_id]) > 30:
+                    conversation_history[sender_id] = conversation_history[sender_id][-30:]
+
                 return reply
 
             except Exception as e:
@@ -204,7 +217,7 @@ async def get_ai_response(sender_id: str, user_message: str) -> str:
 
     except Exception as e:
         print(f"AI Error: {e}")
-        return "Assalam o Alaikum! 🌟 Eglai Tours mein khush amdeed! Hum Pakistan ke behtareen tours offer karte hain — Hunza, Skardu, Swat, Murree aur bohat kuch! Aap kaunsa tour dekhna chahte hain? 😊"
+        return "Assalam o Alaikum! 🌟 Eglai Tours mein khush amdeed! Aap kaunsa tour dekhna chahte hain? Hunza, Skardu, Swat, Murree — sab available hain! 😊"
 
 # =============================================
 # SEND WHATSAPP MESSAGE
@@ -246,7 +259,6 @@ async def send_whatsapp(to: str, message: str):
 @app.get("/")
 async def health_check():
     return {
-        "status": "✅ Eglai Tours Chatbot is Running!",
-        "company": "Eglai Tours Pakistan",
+        "status": "Eglai Tours Chatbot Running!",
         "timestamp": datetime.now().isoformat()
     }
